@@ -3,40 +3,49 @@
 import { useEffect, useState } from 'react';
 
 export function TimerCircle({ frequencyMinutes, lastRun, isActive }) {
-  const [progress, setProgress] = useState(0);
   const [timeLeft, setTimeLeft] = useState('');
+  const [progress, setProgress] = useState(0);
+  const [isDue, setIsDue] = useState(false);
 
   useEffect(() => {
     if (!isActive || !lastRun) {
-      setProgress(0);
       setTimeLeft('--:--');
+      setProgress(0);
+      setIsDue(false);
       return;
     }
 
-    const calculateProgress = () => {
+    const calculateTime = () => {
       const now = new Date();
       const lastRunDate = new Date(lastRun);
       const totalMs = frequencyMinutes * 60 * 1000;
       const elapsedMs = now.getTime() - lastRunDate.getTime();
-      const elapsedPercent = Math.min((elapsedMs / totalMs) * 100, 100);
       
-      const remainingMs = Math.max(totalMs - elapsedMs, 0);
+      const remainingMs = totalMs - elapsedMs;
+      
+      if (remainingMs <= 0) {
+        setTimeLeft('Ready');
+        setProgress(100);
+        setIsDue(true);
+        return;
+      }
+      
       const remainingMinutes = Math.floor(remainingMs / (60 * 1000));
       const remainingSeconds = Math.floor((remainingMs % (60 * 1000)) / 1000);
       
-      setProgress(elapsedPercent);
-      
       if (remainingMinutes > 0) {
         setTimeLeft(`${remainingMinutes}:${remainingSeconds.toString().padStart(2, '0')}`);
-      } else if (remainingSeconds > 0) {
-        setTimeLeft(`0:${remainingSeconds.toString().padStart(2, '0')}`);
       } else {
-        setTimeLeft('Done');
+        setTimeLeft(`0:${remainingSeconds.toString().padStart(2, '0')}`);
       }
+      
+      const progressPercent = Math.min((elapsedMs / totalMs) * 100, 100);
+      setProgress(progressPercent);
+      setIsDue(false);
     };
 
-    calculateProgress();
-    const interval = setInterval(calculateProgress, 1000);
+    calculateTime();
+    const interval = setInterval(calculateTime, 1000);
     
     return () => clearInterval(interval);
   }, [frequencyMinutes, lastRun, isActive]);
@@ -47,7 +56,7 @@ export function TimerCircle({ frequencyMinutes, lastRun, isActive }) {
 
   const getColor = () => {
     if (!isActive) return '#3f3f46';
-    if (progress >= 100) return '#10b981';
+    if (isDue) return '#10b981';
     if (progress >= 75) return '#f97316';
     return '#71717a';
   };
@@ -75,15 +84,17 @@ export function TimerCircle({ frequencyMinutes, lastRun, isActive }) {
           strokeDashoffset={strokeDashoffset}
           className="transition-all duration-1000 ease-linear"
           style={{
-            filter: isActive && progress >= 100 
-              ? 'drop-shadow(0 0 4px rgba(16, 185, 129, 0.5))' 
-              : 'none'
+            filter: isActive && isDue 
+              ? 'drop-shadow(0 0 6px rgba(16, 185, 129, 0.6))' 
+              : isActive && progress >= 75
+                ? 'drop-shadow(0 0 4px rgba(249, 115, 22, 0.4))'
+                : 'none'
           }}
         />
       </svg>
       <div className="absolute inset-0 flex items-center justify-center">
-        <span className="text-[10px] font-medium text-white">
-          {timeLeft}
+        <span className="text-[10px] font-bold text-white">
+          {isDue ? '✓' : timeLeft}
         </span>
       </div>
     </div>

@@ -8,6 +8,8 @@ const LIMITS = {
   enterprise: { monitors: 999999, leads: 999999 },
 };
 
+const USER_AGENT = 'RedditSignal/1.0 (by /u/redditsignal)';
+
 export async function POST(request) {
   try {
     const { monitorId } = await request.json();
@@ -54,64 +56,80 @@ export async function POST(request) {
     const results = [];
     const postsToInsert = [];
 
+    console.log('Scanning monitor:', monitor.name, 'subreddits:', monitor.subreddits, 'keywords:', monitor.keywords);
+
     for (const subreddit of monitor.subreddits) {
       await new Promise(resolve => setTimeout(resolve, 2000));
 
-      const response = await fetch(
-        `https://www.reddit.com/r/${subreddit}/new.json?limit=30`,
-        {
-          headers: {
-            'User-Agent': 'RedditSignal/1.0 (by /u/redditsignal)',
-          },
-        }
-      );
-
-      if (!response.ok) {
-        console.error(`Failed to fetch r/${subreddit}: ${response.status}`);
-        continue;
-      }
-
-      const data = await response.json();
-      const posts = data.data.children.map(child => child.data);
-
-      const matchedPosts = posts.filter(post => {
-        const content = `${post.title} ${post.selftext || ''}`.toLowerCase();
-        return monitor.keywords.some(keyword => 
-          content.includes(keyword.toLowerCase())
+      try {
+        const response = await fetch(
+          `https://www.reddit.com/r/${subreddit}/new.json?limit=30`,
+          {
+            headers: {
+              'User-Agent': USER_AGENT,
+            },
+          }
         );
-      });
 
-      for (const post of matchedPosts) {
-        const { data: existingLead } = await supabase
-          .from('leads')
-          .select('id')
-          .eq('reddit_post_id', post.id)
-          .single();
-
-        if (!existingLead && results.length + postsToInsert.length < remainingSlots) {
-          postsToInsert.push({
-            monitor_id: monitor.id,
-            reddit_post_id: post.id,
-            title: post.title,
-            url: `https://reddit.com${post.permalink}`,
-            subreddit: post.subreddit,
-            author: post.author,
-            content_snippet: post.selftext?.substring(0, 500) || '',
-            full_json: post,
-            timestamp: new Date(post.created_utc * 1000).toISOString(),
-            status: 'new',
-          });
+        if (!response.ok) {
+          console.error(`Failed to fetch r/${subreddit}: ${response.status}`);
+          continue;
         }
+
+        const data = await response.json();
+        const posts = data.data?.children?.map(child => child.data) || [];
+        
+        console.log(`r/${subreddit}: found ${posts.length} posts`);
+
+        for (const post of posts) {
+          const title = (post.title || '').toLowerCase();
+          const selftext = (post.selftext || '').toLowerCase();
+          const content = `${title} ${selftext}`;
+          
+          const matchedKeywords = [];
+          for (const keyword of monitor.keywords) {
+            if (content.includes(keyword.toLowerCase())) {
+              matchedKeywords.push(keyword);
+            }
+          }
+
+          if (matchedKeywords.length > 0) {
+            const { data: existingLead } = await supabase
+              .from('leads')
+              .select('id')
+              .eq('reddit_post_id', post.id)
+              .single();
+
+            if (!existingLead && results.length + postsToInsert.length < remainingSlots) {
+              postsToInsert.push({
+                monitor_id: monitor.id,
+                reddit_post_id: post.id,
+                title: post.title,
+                url: `https://reddit.com${post.permalink}`,
+                subreddit: post.subreddit,
+                author: post.author,
+                content_snippet: post.selftext?.substring(0, 500) || '',
+                full_json: post,
+                timestamp: new Date(post.created_utc * 1000).toISOString(),
+                status: 'new',
+              });
+              results.push({ id: post.id, title: post.title, keywords: matchedKeywords });
+            }
+          }
+        }
+      } catch (error) {
+        console.error(`Error scanning r/${subreddit}:`, error);
       }
     }
 
     if (postsToInsert.length > 0) {
+      console.log('Inserting', postsToInsert.length, 'new leads');
       const { error: insertError } = await supabase
         .from('leads')
         .insert(postsToInsert);
 
-      if (!insertError) {
-        results.push(...postsToInsert.map(p => p.reddit_post_id));
+      if (insertError) {
+        console.error('Insert error:', insertError);
       }
     }
 
@@ -120,16 +138,18 @@ export async function POST(request) {
       .update({ last_run: new Date().toISOString() })
       .eq('id', monitorId);
 
+    console.log('Scan complete. New leads:', results.length);
+
     return NextResponse.json({ 
       success: true, 
       newLeads: results.length,
       message: results.length > 0 
-        ? `Found ${results.length} new leads` 
-        : 'No new leads found'
+        ? `Found ${results.length} new leads: ${results.slice(0, 3).map(r => r.keywords.join(', ')).join('; ')}`
+        : 'No new leads found - try adjusting keywords or subreddits'
     });
 
   } catch (error) {
     console.error('Ingest error:', error);
-    return NextResponse.json({ success: false, message: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ success: false, message: 'Internal server error: ' + error.message }, { status: 500 });
   }
 }
